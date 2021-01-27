@@ -1,7 +1,8 @@
 import logging
 from requests import Session
-from utils import to_safe_filename
 from io import SEEK_END
+from time import sleep
+from hashlib import md5
 
 
 class AnchorSession:
@@ -10,6 +11,8 @@ class AnchorSession:
     AUDIO_LIBRARY = 'api/sourceaudio/audiolibrary'
     SIGNED_URL = 'api/proxy/v3/upload/signed_url'
     PROCESS_AUDIO = 'api/proxy/v3/upload/{}/process_audio'
+    UPLOAD_INFO = 'api/proxy/v3/upload/{}'
+    CREATE_EPISODE = 'api/podcastepisode'
 
     def __init__(self, username, password):
         self._logger = logging.getLogger(__name__)
@@ -26,6 +29,22 @@ class AnchorSession:
         self._logger.info(f'Logged in as {username}')
 
     def list_uploaded_files(self):
+        items = self._get_audio_library()
+        return [i['caption'] for i in items]
+
+    def save_audio_stream_as_draft(self, audio_stream, identifier, published_at, title, description):
+        mime_type = 'audio/ogg'
+        date_prefix = published_at.strftime('%Y-%m-%d %H:%M:%S')
+        formatted_title = f'[{date_prefix}][{identifier}] {title}'
+        filename = md5(formatted_title.encode('utf-8')).hexdigest() + '.opus'
+
+        upload_url, request_uuid = self._get_upload_location_info(mime_type, filename)
+        self._upload_audio_stream(upload_url, audio_stream, mime_type)
+        processing_request_uuid = self._process_audio_stream(request_uuid, formatted_title)
+        audio_data = self._finish_audio_processing_status(processing_request_uuid)
+        self._create_episode_draft(audio_data, title, description)
+
+    def _get_audio_library(self):
         self._logger.info('Fetching audio library info')
         url = f'{self.BASE_URL}/{self.AUDIO_LIBRARY}'
         r = self._session.get(url)
@@ -33,16 +52,7 @@ class AnchorSession:
             raise Exception(f'Failed to get audio library, status code: {r.status_code}')
         items = r.json()["audios"]
         self._logger.info(f'Found {len(items)} items in audio library')
-        return [i['caption'] for i in items]
-
-    def save_audio_stream_as_draft(self, audio_stream, mime_type, identifier, published_at, title, description):
-        date_prefix = published_at.strftime('%Y-%m-%d %H:%M:%S')
-        filename = f'[{date_prefix}][{identifier}] {title}'
-        safe_filename = to_safe_filename(filename)
-
-        upload_url, request_uuid = self._get_upload_location_info(mime_type, safe_filename)
-        self._upload_audio_stream(upload_url, audio_stream, mime_type)
-        self._process_audio_stream(request_uuid, filename)
+        return items
 
     def _get_upload_location_info(self, mime_type, safe_filename):
         self._logger.info(f'Getting upload location for {safe_filename}')
@@ -87,3 +97,67 @@ class AnchorSession:
         if r.status_code < 200 or r.status_code >= 300:
             raise Exception(f'Failed to request audio stream processing, status code: {r.status_code}')
         self._logger.info('Audio stream processing initialized on remote server')
+        response = r.json()
+        return response['requestUuid']
+
+    def _finish_audio_processing_status(self, request_uuid):
+        data = None
+        while True:
+            url = self.BASE_URL + '/' + self.UPLOAD_INFO.format(request_uuid)
+            r = self._session.get(url)
+            if r.status_code < 200 or r.status_code >= 300:
+                raise Exception(f'Failed to request audio stream processing, status code: {r.status_code}')
+
+            response = r.json()
+            state = response['request']['state']
+            data = response['data']
+
+            if state == 'processed':
+                self._logger.info(f'Audio stream processing finished')
+                break
+
+            if state == 'failed':
+                self._logger.error(f'Processing state: failed')
+                # TODO: uploaded file should probably be deleted, but at this point we don't know the 'audioId'
+
+            if state == 'uploaded':
+                self._logger.info(f'Audio stream uploaded, waiting for processing to finish')
+                sleep(5)
+                continue
+
+            raise Exception(f'Unhandled audio stream state: {state}')
+
+        audio_id = data['audioId']
+
+        while True:
+            item = next((i for i in self._get_audio_library() if i['audioId'] == audio_id), None)
+            if item is None:
+                self._logger.error(f'Could not find library item, audioId: {audio_id}')
+                break
+
+            status = item['audioTransformationStatus']
+            if status != 'finished':
+                self._logger.info(
+                    f'Audio transformation status: {status}, waiting for transformation process to finish')
+                sleep(5)
+                continue
+
+            self._logger.info(f'Audio transformation process finished')
+            return item
+
+    def _create_episode_draft(self, audio_data, title, description):
+        # TODO: find a better way to parse and/or format description from YouTube
+        self._logger.info(f'Creating draft episode, title: "{title}"')
+        url = f'{self.BASE_URL}/{self.CREATE_EPISODE}'
+        payload = {
+            "episodeAudios": [audio_data],
+            "hourOffset": -1,
+            "isDraft": True,
+            "publishOn": None,
+            "title": title,
+            "description": f'{description}'
+        }
+        r = self._session.post(url, json=payload)
+        if r.status_code < 200 or r.status_code >= 300:
+            raise Exception(f'Failed create draft episode, status code: {r.status_code}')
+        self._logger.info(f'Draft episode created')

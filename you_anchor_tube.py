@@ -27,7 +27,6 @@ class YouAnchorTube:
                         audio_stream = youtube_session.download_audio_file(video_info.video_id)
                         anchor_session.save_audio_stream_as_draft(
                             audio_stream=audio_stream,
-                            mime_type='audio/ogg',
                             identifier=video_info.video_id,
                             published_at=video_info.published_at,
                             title=video_info.title,
