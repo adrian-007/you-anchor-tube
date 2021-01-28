@@ -1,0 +1,15 @@
+{
+  "ytApiKey":"YouTube-API-Key",
+  "items": [
+    {
+      "anchorUsername": "",
+      "anchorPassword": "",
+      "ytPlaylistId": "id-of-playlist-that-will-source-audio-streams-for-this-account"
+    },
+    {
+      "anchorUsername": "",
+      "anchorPassword": "",
+      "ytPlaylistId": "id-of-another-playlist-that-will-source-audio-streams-for-this-account"
+    }
+  ]
+}

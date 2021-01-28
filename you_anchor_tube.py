@@ -13,6 +13,7 @@ class YouAnchorTube:
 
         self._configure_app()
 
+    def run(self):
         youtube_session = YouTubeSession(self._config.ytApiKey)
 
         for item in self._config.items:
@@ -63,3 +64,9 @@ class YouAnchorTube:
             if video_has_matching_audio is False:
                 results.append(video_info)
         return results
+
+
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
+    yta = YouAnchorTube()
+    yta.run()
